@@ -1,74 +1,69 @@
 #!/usr/bin/env python3
-
 import codecs
 import argparse
 import asyncio
 
-    def sanitize_input(input):
-        input = input.replace('\\', '\\\\')
-        input = input.replace('"', '\\"')
-        input = input.replace("'", "\\'")
-        input = input.replace('`', '\\`')
-        return input
+def close():
+    print('[-]Exiting...')
+    exit(0)
 
-    def build_command(command, wordlist):
-        with codecs.open(wordlist, 'r', encoding='utf-8', errors='ignore') as f:
-            for word in f:
-                if args.sanitize:
-                    word = sanitize_input(word)
-                yield command.replace('FUZZ', f'"{word.strip()}"')
+def sanitize_input(input):
+    input = input.replace('\\', '\\\\')
+    input = input.replace('"', '\\"')
+    input = input.replace("'", "\\'")
+    input = input.replace('`', '\\`')
+    return input
 
-    def count_lines(file):
-        with codecs.open(file, 'r', encoding='utf-8', errors='ignore') as f:
-            return sum(1 for _ in f)
+def build_command(command, wordlist):
+    with codecs.open(wordlist, 'r', encoding='utf-8', errors='ignore') as f:
+        for word in f:
+            if args.sanitize:
+                word = sanitize_input(word)
+            yield command.replace('FUZZ', f'"{word.strip()}"')
+
+def count_lines(file):
+    with codecs.open(file, 'r', encoding='utf-8', errors='ignore') as f:
+        return sum(1 for _ in f)
 
 async def run_command(command):
     process = await asyncio.create_subprocess_shell(command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     stdout, stderr = await process.communicate()
     return stdout, stderr
 
-async def worker(queue):
-    clear = '\033[K'
-    total = count_lines(args.wordlist)
-    count = 0
+async def queue_worker(queue):
     while True:
         command = await queue.get()
-        count += 1
-        print(f'{clear}[{count}/{total}] {command}', end='\r')
-
         stdout, stderr = await run_command(command)
         if args.condition:
-            if args.condition in stdout.decode('utf-8'):
-                print(f'\n[+] Condition met: {args.condition}')
-                print(f'[+] Command: {command}')
-                print(f'[+] Output: {stdout.decode("utf-8")}')
+            if args.condition in stdout.decode():
+                print(f'[+]Command: {command}')
+                print(f'[+]Condition met: {args.condition}')
+                print(f'[+]Output: {stdout.decode()}')
         else:
-            print(f'\n[+] Command: {command}')
-            print(f'[+] Output: {stdout.decode("utf-8")}')
-
-        if not args.ignore_error and stderr:
-            print(f'\n[-] Error: {stderr.decode("utf-8")}')
+            print(f'[+]Command: {command}')
+            print(f'[+]Output: {stdout.decode()}')
+        if not args.ignore_error:
+            if stderr:
+                print(f'[-]Error: {stderr.decode()}')
         queue.task_done()
 
-async def main():
-    clear = '\033[K'
-    commands = build_command(args.execute, args.wordlist)
-    print('loading wordlist...', end='\r')
-    total = count_lines(args.wordlist)
-    queue = asyncio.Queue(maxsize=args.threads)
-    for i, command in enumerate(commands, 1):
-        await queue.put(command)
-    print(f'{clear}', end='\r')
-
+async def run():
+    print(f'Loading wordlist...')
+    total_lines = count_lines(args.wordlist)
+    completed_lines = 0
     tasks = []
-    for _ in range(args.threads):
-        task = asyncio.create_task(worker(queue))
-        tasks.append(task)
-    await queue.join()
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-
+    command_generator = build_command(args.execute, args.wordlist)
+    queue = asyncio.Queue(maxsize=args.threads)
+    for command in command_generator:
+        completed_lines += 1
+        if queue.full():
+            await queue.join()
+            await queue.put(command)
+            tasks.append(task)
+        else:
+            await queue.put(command)
+            task = asyncio.create_task(queue_worker(queue))
+        print(f'[{completed_lines}/{total_lines}]', end='\r')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Fuzz a command with a list of arguments')
@@ -84,4 +79,7 @@ if __name__ == '__main__':
         parser.print_help()
         exit(1)
 
-    asyncio.run(main())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        close()
