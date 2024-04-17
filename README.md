@@ -1,5 +1,5 @@
 # clf
-Command line fuzzer
+Command Line Fuzzer
 
 Fuzz a command with a wordlist and check for a condition in the output.
 
@@ -15,5 +15,5 @@ Fuzz a command with a wordlist and check for a condition in the output.
 
 ## Examples
 ```bash
-clf -e "echo FUZZ" -w wordlist.txt 
+python clf.py -e "echo FUZZ" -w wordlist.txt 
 ```
