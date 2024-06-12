@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import codecs
 import argparse
-import asyncio
+import multiprocessing
+import subprocess
 
 
 def close():
@@ -17,10 +18,10 @@ def sanitize_input(input):
     return input
 
 
-def build_command(command, wordlist):
+def build_command(command, wordlist, sanitize=False):
     with codecs.open(wordlist, 'r', encoding='utf-8', errors='ignore') as f:
         for word in f:
-            if args.sanitize:
+            if sanitize:
                 word = sanitize_input(word)
             yield command.replace('FUZZ', f'"{word.strip()}"')
 
@@ -30,50 +31,35 @@ def count_lines(file):
         return sum(1 for _ in f)
 
 
-async def run_command(command):
-    process = await asyncio.create_subprocess_shell(
-        command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await process.communicate()
-    return stdout, stderr
-
-
-async def queue_worker(queue):
-    while True:
-        command = await queue.get()
-        stdout, stderr = await run_command(command)
-        if args.condition:
-            if args.condition in stdout.decode():
-                print(f'[+]Command: {command}')
+def execute_command(command, condition=None, ignore_error=False):
+    try:
+        output = subprocess.check_output(
+            command, shell=True, stderr=subprocess.STDOUT)
+        if condition is not None:
+            if condition in output.decode('utf-8'):
                 print(f'[+]Condition met: {args.condition}')
-                print(f'[+]Output: {stdout.decode()}')
+                print(f'[+]Command: {command}')
+                print(f'[+]Output: {output.decode("utf-8")}')
+                close()
         else:
             print(f'[+]Command: {command}')
-            print(f'[+]Output: {stdout.decode()}')
-        if not args.ignore_error:
-            if stderr:
-                print(f'[-]Error: {stderr.decode()}')
-        queue.task_done()
+            print(f'[+]Output: {output.decode("utf-8")}')
+    except subprocess.CalledProcessError as e:
+        if not ignore_error:
+            print(f'[-]Error: {e.output.decode("utf-8")}')
+            close()
 
 
-async def run():
-    print('Loading wordlist...')
-    total_lines = count_lines(args.wordlist)
-    completed_lines = 0
-    tasks = []
-    command_generator = build_command(args.execute, args.wordlist)
-    queue = asyncio.Queue(maxsize=args.threads)
-    task = None
-    for command in command_generator:
-        completed_lines += 1
-        if queue.full():
-            await queue.join()
-            await queue.put(command)
-            tasks.append(task)
-        else:
-            await queue.put(command)
-            task = asyncio.create_task(queue_worker(queue))
-        print(f'[{completed_lines}/{total_lines}]', end='\r')
+def fuzz_threaded(
+    command, wordlist, condition=None, ignore_error=False,
+    threads=4, sanitize=False
+):
+    count = count_lines(wordlist)
+    print(f'[+]Fuzzing {count} arguments with {threads} threads')
+    commands = build_command(command, wordlist, sanitize)
+    with multiprocessing.Pool(threads) as pool:
+        pool.map(execute_command, commands)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -110,6 +96,9 @@ if __name__ == '__main__':
         exit(1)
 
     try:
-        asyncio.run(run())
+        fuzz_threaded(
+            args.execute, args.wordlist, args.condition,
+            args.ignore_error, args.threads, args.sanitize
+        )
     except KeyboardInterrupt:
         close()
