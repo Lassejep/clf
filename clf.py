@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import codecs
 import argparse
-import multiprocessing
+from multiprocessing import Process
 import subprocess
 
 
@@ -19,11 +19,13 @@ def sanitize_input(input):
 
 
 def build_command(command, wordlist, sanitize=False):
+    line = 0
     with codecs.open(wordlist, 'r', encoding='utf-8', errors='ignore') as f:
         for word in f:
             if sanitize:
                 word = sanitize_input(word)
-            yield command.replace('FUZZ', f'"{word.strip()}"')
+            line += 1
+            yield command.replace('FUZZ', f'"{word.strip()}"'), line
 
 
 def count_lines(file):
@@ -31,34 +33,53 @@ def count_lines(file):
         return sum(1 for _ in f)
 
 
-def execute_command(command, condition=None, ignore_error=False):
+def execute_command(
+    command, line_count, condition, ignore_error
+):
+    command, current_line = command
     try:
         output = subprocess.check_output(
             command, shell=True, stderr=subprocess.STDOUT)
         if condition is not None:
+            print('\033[K', end='')
+            print(f'[{current_line}/{line_count}]', end='\r')
             if condition in output.decode('utf-8'):
-                print(f'[+]Condition met: {args.condition}')
+                print(f'\n[+]Condition met: {args.condition}')
                 print(f'[+]Command: {command}')
                 print(f'[+]Output: {output.decode("utf-8")}')
-                close()
         else:
+            print('\033[K', end='')
+            print(f'[{current_line}/{line_count}]')
             print(f'[+]Command: {command}')
             print(f'[+]Output: {output.decode("utf-8")}')
     except subprocess.CalledProcessError as e:
         if not ignore_error:
+            print('\033[K', end='')
+            print(f'[{current_line}/{line_count}]')
             print(f'[-]Error: {e.output.decode("utf-8")}')
             close()
+    except KeyboardInterrupt:
+        close()
 
 
 def fuzz_threaded(
     command, wordlist, condition=None, ignore_error=False,
     threads=4, sanitize=False
 ):
-    count = count_lines(wordlist)
-    print(f'[+]Fuzzing {count} arguments with {threads} threads')
+    print('[+]Loading wordlist...', end='\r')
+    line_count = count_lines(wordlist)
     commands = build_command(command, wordlist, sanitize)
-    with multiprocessing.Pool(threads) as pool:
-        pool.map(execute_command, commands)
+    while True:
+        try:
+            for _ in range(threads):
+                p = Process(
+                    target=execute_command,
+                    args=(next(commands), line_count, condition, ignore_error)
+                )
+                p.start()
+            p.join()
+        except StopIteration:
+            break
 
 
 if __name__ == '__main__':
